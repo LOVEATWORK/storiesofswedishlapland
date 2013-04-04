@@ -1,0 +1,12 @@
+{
+  "name": "lapland-scraper",
+  "version": "1.0.0",
+  "private": true,
+  "dependencies": {
+    "async": "*",
+    "coffee-script": "*",
+    "express": "*",
+    "instagram-node-lib": "*",
+    "levelup": "*"
+  }
+}
