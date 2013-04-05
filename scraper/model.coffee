@@ -15,7 +15,8 @@ class Model
 
   constructor: (@id) ->
 
-  serialize: -> {@id}
+  serialize: ->
+    throw new Error 'Not implemented'
 
   save: (callback) ->
     db = @constructor.db()
@@ -26,7 +27,6 @@ Model.dblocation = path.join __dirname, './data'
 Model.db = ->
   if not @_db?
     dbpath = path.join this.dblocation, this.name.toLowerCase()
-    console.log "Opening database at #{ dbpath }"
     @_db = levelup dbpath,
       keyEncoding: 'utf8'
       valueEncoding: 'json'
