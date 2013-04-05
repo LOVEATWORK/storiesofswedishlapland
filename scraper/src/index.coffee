@@ -4,7 +4,15 @@ coffee = require 'coffee-script'
 querystring = require 'querystring'
 instagram = require 'instagram-node-lib'
 
-config = require './config'
+try
+  config = require '../config'
+catch error
+  if error.code is 'MODULE_NOT_FOUND'
+    process.stderr.write "Config missing! Look in config-defaults.coffee for instructions.\n"
+    process.exit()
+  else
+    throw error
+
 {Model} = require './model'
 
 MAX_REQS = 5 # max concurrent requests
@@ -163,3 +171,4 @@ buildGraph = ->
       throw error
     log "Done! Found #{ results.length } nodes"
     process.stdout.write JSON.stringify results
+    process.exit()

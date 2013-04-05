@@ -22,7 +22,7 @@ class Model
     db = @constructor.db()
     db.put @id, @serialize(), callback
 
-Model.dblocation = path.join __dirname, './data'
+Model.dblocation = path.join __dirname, '../data'
 
 Model.db = ->
   if not @_db?
