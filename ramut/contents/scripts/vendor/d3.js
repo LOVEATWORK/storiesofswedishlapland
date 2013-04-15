@@ -8437,6 +8437,4 @@ d3 = function() {
   return d3;
 }();
 
-module.exports = d3
-do -> delete this.d3
-
+module.exports = d3;

@@ -1,0 +1,47 @@
+
+body {
+
+}
+
+svg {
+  background-color: #dadada;
+
+  .node {
+    opacity: 0.75;
+    .reach {
+      display: none;
+    }
+    &:hover {
+      opacity: 1;
+      .reach {
+        display: block;
+        opacity: 1;
+        line {
+          stroke: white;
+        }
+        circle {
+          fill: white;
+          stroke: #ff00ce;
+        }
+      }
+    }
+  }
+
+  .reach {
+    line {
+      stroke-width: 4;
+      stroke: #ff00ce;
+      stroke-dasharray: 1;
+    }
+    circle {
+      fill: #ff00ce;
+    }
+  }
+
+  path.country {
+    fill: #eeeeee;
+    stroke: #30005f;
+    &.id752 {
+    }
+  }
+}
