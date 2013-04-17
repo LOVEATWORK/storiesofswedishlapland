@@ -2,7 +2,10 @@ async = require 'async'
 express = require 'express'
 coffee = require 'coffee-script'
 querystring = require 'querystring'
-instagram = require 'instagram-node-lib'
+util = require 'util'
+
+Instagram = require './instagram'
+{Model} = require './model'
 
 try
   config = require '../config'
@@ -13,29 +16,10 @@ catch error
   else
     throw error
 
-{Model} = require './model'
+MAX_REQS = 8 # max concurrent requests
 
-MAX_REQS = 5 # max concurrent requests
-
-instagram.set 'client_id', config.instagram.id
-instagram.set 'client_secret', config.instagram.secret
-
-authUrl = "https://instagram.com/oauth/authorize/?" + querystring.stringify
-  client_id: config.instagram.id
-  redirect_uri: config.instagram.redirect
-  response_type: 'token'
-
-underpErrorHandler = (callback) ->
-  called = false
-  return (args...) ->
-    return if called
-    called = true
-    if args[1] is 'Oops, an error occurred.\n'
-      callback new Error "500: Instagram internal server error."
-    else if args[0] instanceof Error
-      callback args[0]
-    else
-      callback new Error "#{ args[0] }: #{ args[1] }"
+authUrl = Instagram.getAuthUrl config.instagram.id, config.instagram.redirect
+instagram = new Instagram
 
 log = (msg, newline=true) ->
   msg += '\n' if newline
@@ -55,6 +39,7 @@ randomLocation = ->
 
 resolveReach = (media, callback) ->
   ### Resolve instagram *media* likes and comments to users with geodata. ###
+  log "resolving reach for #{ media.id }"
 
   # users this media "reaches out" to (comments + likes)
   userIds = media.likes.data.map (like) -> like.id
@@ -62,11 +47,10 @@ resolveReach = (media, callback) ->
 
   async.waterfall [
     (callback) ->
-      async.mapLimit eliminateDuplicates(userIds), MAX_REQS, User.load.bind(User), callback
+      async.mapSeries eliminateDuplicates(userIds), User.load.bind(User), callback
     (users, callback) ->
-      users = users.filter (user) -> not user.isPrivate() and user.location()?
-      reach = users.map (user) -> {location: user.location()}
-      # TODO: username & followers
+      users = users.filter (user) -> user.isValid()
+      reach = users.map (user) -> user.repr()
       callback null, reach
   ], callback
 
@@ -75,20 +59,19 @@ class DataModel extends Model
   serialize: -> @data
 
 DataModel.deserialize = (id, data, callback) ->
-  callback null, new User id, data
+  callback null, new this id, data
 
 class Node extends DataModel
   ### A node is a instagram post and its reach ###
 
 Node.new = (id, callback) ->
   ### Fetch instagram post *id* and resolve likes to users/positions ###
+  fcb = callback
   async.waterfall [
     (callback) ->
       # fetch media
-      instagram.media.info
-        media_id: id
-        error: underpErrorHandler(callback)
-        complete: (data) -> callback null, data
+      log "fetching media #{ id }"
+      instagram.mediaInfo id, callback
     (media, callback) ->
       resolveReach media, (error, result) ->
         callback error,
@@ -101,34 +84,48 @@ Node.new = (id, callback) ->
   ], callback
 
 Node.nodesForLocation = (location, callback) ->
-  instagram.media.search
-    lat: location.lat
-    lng: location.lng
-    distance: 5000
-    complete: (data) ->
-      async.map data, (node, callback) ->
-        Node.load node.id, callback
-      , callback
-    error: underpErrorHandler(callback)
+  instagram.mediaSearch location.lat, location.lng, (error, result) ->
+    return callback error if error?
+    log "found #{ result.length } photos at #{ location.lat },#{ location.lng }"
+    async.mapLimit result, MAX_REQS, (node, callback) ->
+      Node.load node.id, callback
+    , callback
 
 class User extends DataModel
+
+  isValid: ->
+    not @isPrivate() and @location()?
 
   isPrivate: ->
     @data is false
 
   location: ->
-    for media in @data
+    for media in @data.recent
       return media.location if media.location?
     return null
 
+  repr: ->
+    {location: @location(), username: @data.username, counts: @data.counts}
+
 User.new = (id, callback) ->
-  instagram.users.recent
-    user_id: id
-    error: (message, error) ->
-      # NOTE: error responses here are all jumbled up. just assume 400 on any error
-      callback null, new User id, false # private user
-    complete: (data) ->
-      callback null, new User id, data
+  log "fetching user #{ id }"
+
+  final = callback
+  async.waterfall [
+    (callback) ->
+      instagram.userInfo id, (error, userdata) ->
+        if error?.body?.meta?.error_type is 'APINotAllowedError'
+          log "user #{ id } is private"
+          final null, new User id, false
+        else
+          callback error, userdata
+    (userdata, callback) ->
+      instagram.userRecent id, (error, recent) ->
+        return callback error if error?
+        userdata.recent = recent
+        callback null, new User id, userdata
+      , callback
+  ], callback
 
 tokengrab = """
   if window.location.hash[0..12] is '#access_token'
@@ -143,12 +140,9 @@ tokengrab = """
 app = express()
 app.get '/', (request, response) ->
   if request.query.access_token?
-    instagram.set 'access_token', request.query.access_token
+    instagram.accessToken = request.query.access_token
     log "token: #{ request.query.access_token }"
     buildGraph()
-    # Node.load '5382_72', (error, result) ->
-    #   throw error if error
-    #   console.log 'RESULT:', result
 
   response.writeHead 200, {'Content-Type': 'text/html; charset=utf-8'}
   response.end "<script>#{ coffee.compile tokengrab }</script>"
@@ -156,19 +150,25 @@ app.get '/', (request, response) ->
 app.listen config.port
 log "waiting for access token, visit #{ config.instagram.redirect }"
 
+fetchPoi = (point, callback) ->
+  log "Fetching #{ point.name }... "
+  poi =
+    name: point.name
+    location:
+      latitude: point.lat
+      longitude: point.lng
+  Node.nodesForLocation point, (error, nodes) ->
+    if not error?
+      totalReach = nodes.reduce ((p, n) -> p + n.data.reach.length), 0
+      log "#{ point.name }: #{ nodes.length } nodes - total reach #{ totalReach }"
+      poi.nodes = nodes
+    callback error, poi
+
 buildGraph = ->
-  results = []
-  async.eachSeries config.poi, (point, callback) ->
-    log "Fetching #{ point.name }... ", false
-    Node.nodesForLocation point, (error, result) ->
-      if not error?
-        totalReach = result.reduce ((p, n) -> p + n.data.reach.length), 0
-        log " #{ result.length } posts. total reach #{ totalReach }"
-        results = results.concat result
-      callback error
-  , (error) ->
+  async.mapSeries config.poi, fetchPoi, (error, results) ->
     if error?
+      log "ERROR: #{ error.message }\n" + util.inspect(error)
       throw error
-    log "Done! Found #{ results.length } nodes"
+    log "Done!"
     process.stdout.write JSON.stringify results
     process.exit()
