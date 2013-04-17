@@ -9,19 +9,19 @@ svg {
   .node {
     opacity: 0.75;
     .reach {
-      display: none;
+      opacity: 0;
     }
-    &:hover {
+    &.active {
       opacity: 1;
+      stroke: #f200d3;
       .reach {
-        display: block;
         opacity: 1;
         line {
-          stroke: white;
+          stroke: #f200d3;
         }
         circle {
           fill: white;
-          stroke: #ff00ce;
+          stroke: #f200d3;
         }
       }
     }
@@ -29,9 +29,9 @@ svg {
 
   .reach {
     line {
-      stroke-width: 4;
-      stroke: #ff00ce;
-      stroke-dasharray: 1;
+      stroke-width: 1;
+      stroke: #fb5fe2;
+      // stroke-dasharray: 1;
     }
     circle {
       fill: #ff00ce;

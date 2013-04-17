@@ -1,4 +1,6 @@
 
+# TODO: filtrera ut reach utanför 5km
+
 d3 = require './vendor/d3'
 async = require './vendor/async'
 topojson = require './vendor/topojson'
@@ -20,6 +22,8 @@ nodeColors = d3.scale.ordinal()
   .range(['#00fffd', '#ffcf00', '#ff00ce'])
 
 main = (reachData, mapData) ->
+  reachData.forEach (d) ->
+    d.nodes = d.nodes.map (n) -> n.data
 
   # TODO: adapt to window
   width = 960
@@ -37,6 +41,8 @@ main = (reachData, mapData) ->
   path = d3.geo.path()
     .projection(projection)
 
+  img = d3.select('body').append('img')
+
   g = svg.append("g")
 
   map = topojson.feature(mapData, mapData.objects.countries).features
@@ -48,44 +54,83 @@ main = (reachData, mapData) ->
   nodePosition = (d) ->
     projection [d.location.longitude, d.location.latitude]
 
-  nodeTranslation = (d) ->
+  poiSize = (d) ->
+    r = 1 + d.nodes.length
+    return [r * 4, r * 4]
+
+  poiPosition = (d) ->
     pos = nodePosition(d)
+    size = poiSize(d)
+    pos[0] -= size[0] / 2
+    pos[1] -= size[1] / 2
+    return pos
+
+  posTrans = (pos) ->
     "translate(#{ pos[0] }, #{ pos[1]})"
 
-  reachData = reachData.map (d) -> d.data
+  pack = d3.layout.pack()
+    .padding(2)
+    .value((d) -> d.reach.length + 1)
+    #.children((d) -> d.nodes)
 
-  nodes = g.selectAll('.node').data(reachData).enter().append('g')
-    .attr('class', 'node')
-    .on('click', (d) ->
-      console.log d
-    )
+  pois = g.selectAll('.poi').data(reachData).enter().append('g')
+    .attr('class', 'poi')
+    .attr('transform', (d) -> posTrans(poiPosition(d)))
 
-  nodes.append('circle')
-    .attr('r', (d) -> d.reach.length)
-    .attr('transform', nodeTranslation)
-    .style('fill', (d, i) -> nodeColors(i))
+  pois.each (d) ->
+    poi = d3.select this
 
-  reach = nodes.selectAll('.reach').data((d) -> d.reach).enter().append('g')
-    .attr('class', 'reach')
+    ppos = poiPosition(d)
 
-  reach.each (d) ->
-    return unless d.location.longitude?
+    pack.size(poiSize(d))
 
-    node = d3.select this
-    parent = d3.select this.parentNode
+    nodes = pack.nodes({children: d.nodes}).filter (d) ->
+      d.depth > 0
 
-    pos = nodePosition d
-    ppos = nodePosition parent.datum()
+    ng = poi.selectAll('.node').data(nodes).enter().append('g')
+      .attr('class', 'node')
+      .on('click', (d) ->
+        img.attr('src', d.images.standard_resolution.url)
+      )
 
-    node.append('line')
-      .attr('x1', pos[0])
-      .attr('y1', pos[1])
-      .attr('x2', ppos[0])
-      .attr('y2', ppos[1])
+    rg = ng.selectAll('.reach').data((d) -> d.reach).enter().append('g')
+      .attr('class', 'reach')
+      .style('pointer-events', 'none')
 
-    node.append('circle')
-      .attr('r', 2)
-      .attr('transform', nodeTranslation)
+    ng.append('circle')
+      .attr('cx', (d) -> d.x)
+      .attr('cy', (d) -> d.y)
+      .attr('r', (d) -> d.r)
+      .style('fill', (d, i) -> nodeColors(i))
+      .on('mouseover', ->
+
+        n = d3.select this.parentNode
+        n.classed('active', true)
+      )
+      .on('mouseout', ->
+        n = d3.select this.parentNode
+        n.classed('active', false)
+      )
+
+    rg.each (d) ->
+      return unless d.location.longitude?
+      r = d3.select this
+      n = d3.select this.parentNode
+
+      dd = n.datum()
+      p = nodePosition(d)
+      p[0] -= ppos[0]
+      p[1] -= ppos[1]
+
+      r.append('line')
+        .attr('x1', dd.x)
+        .attr('y1', dd.y)
+        .attr('x2', p[0])
+        .attr('y2', p[1])
+
+      r.append('circle')
+        .attr('r', 2)
+        .attr('transform', posTrans(p))
 
   zoom = d3.behavior.zoom()
     .on('zoom', ->
