@@ -50,7 +50,23 @@ Model.load = (id, ignoreCache, callback) ->
 Model.deserialize = (id, data, callback) ->
   throw new Error 'Not implemented'
 
-Model.new = (id, callback) ->
-  throw new Error 'Not implemented'
+### Implement to create a new instance if Model.load does not find a existing id in db. ###
+Model.new = null # (id, callback) ->
+
+Model.all = (callback) ->
+  results = []
+  stream = @db().createReadStream()
+  stream.on 'data', (data) =>
+    this.deserialize data.key, data.value, (error, result) ->
+      if error?
+        stream.close()
+        callback error
+        callback = null
+        return
+      results.push result
+  stream.on 'error', (error) ->
+    callback? error
+  stream.on 'end', ->
+    callback? null, results
 
 module.exports = {Model}

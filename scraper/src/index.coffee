@@ -66,7 +66,6 @@ class Node extends DataModel
 
 Node.new = (id, callback) ->
   ### Fetch instagram post *id* and resolve likes to users/positions ###
-  fcb = callback
   async.waterfall [
     (callback) ->
       # fetch media
@@ -87,8 +86,8 @@ Node.nodesForLocation = (location, callback) ->
   instagram.mediaSearch location.lat, location.lng, (error, result) ->
     return callback error if error?
     log "found #{ result.length } photos at #{ location.lat },#{ location.lng }"
-    async.mapLimit result, MAX_REQS, (node, callback) ->
-      Node.load node.id, callback
+    async.mapLimit result, MAX_REQS, (media, callback) ->
+      Node.load media.id, callback
     , callback
 
 class User extends DataModel
@@ -101,7 +100,7 @@ class User extends DataModel
 
   location: ->
     for media in @data.recent
-      return media.location if media.location?
+      return media.location if media.location?.latitude?
     return null
 
   repr: ->
@@ -150,25 +149,52 @@ app.get '/', (request, response) ->
 app.listen config.port
 log "waiting for access token, visit #{ config.instagram.redirect }"
 
-fetchPoi = (point, callback) ->
-  log "Fetching #{ point.name }... "
-  poi =
-    name: point.name
-    location:
-      latitude: point.lat
-      longitude: point.lng
-  Node.nodesForLocation point, (error, nodes) ->
-    if not error?
-      totalReach = nodes.reduce ((p, n) -> p + n.data.reach.length), 0
-      log "#{ point.name }: #{ nodes.length } nodes - total reach #{ totalReach }"
-      poi.nodes = nodes
-    callback error, poi
+class Poi extends DataModel
+
+  cleanNodes: ->
+    ### Remove any duplicate nodes ###
+    key = (node) -> node.id
+    map = {}
+    for node in @data.nodes
+      map[key(node)] = node
+    @data.nodes = []
+    for _, node of map
+      @data.nodes.push node
+    return
+
+  serialize: ->
+    @cleanNodes()
+    return super()
+
+Poi.new = (id, callback) ->
+  callback null, new Poi(id, {nodes: []})
+
+updatePoi = (point, callback) ->
+  log "Updating #{ point.name }... "
+  async.waterfall [
+    (callback) -> Poi.load point.name, callback
+    (poi, callback) ->
+      poi.data.name = point.name
+      poi.data.location =
+        latitude: point.lat
+        longitude: point.lng
+      Node.nodesForLocation point, (error, nodes) ->
+        if not error?
+          totalReach = nodes.reduce ((p, n) -> p + n.data.reach.length), 0
+          log "#{ point.name }: #{ nodes.length } nodes - total reach #{ totalReach }"
+          poi.data.nodes = poi.data.nodes.concat nodes
+          poi.save callback
+        else
+          callback error
+  ], callback
 
 buildGraph = ->
-  async.mapSeries config.poi, fetchPoi, (error, results) ->
+  async.waterfall [
+    (callback) -> async.forEachSeries config.poi, updatePoi, callback
+    (callback) -> Poi.all callback
+  ], (error, results) ->
     if error?
       log "ERROR: #{ error.message }\n" + util.inspect(error)
       throw error
-    log "Done!"
-    process.stdout.write JSON.stringify results
+    process.stdout.write JSON.stringify results.map((poi) -> poi.data)
     process.exit()
