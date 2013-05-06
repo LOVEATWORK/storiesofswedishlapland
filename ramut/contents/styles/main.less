@@ -1,47 +1,142 @@
 
-body {
+.transform(@a) {
+  -moz-transform: @a;
+  -webkit-transform: @a;
+  -o-transform: @a;
+  -ms-transform: @a;
+  transform: @a;
+}
 
+.transition(@a) {
+  -moz-transition: @a;
+  -webkit-transition: @a;
+  -o-transition: @a;
+  -ms-transition: @a;
+  transition: @a;
+}
+
+.box-shadow(@a) {
+  -webkit-box-shadow: @a;
+  box-shadow: @a;
+}
+
+html, body {
+  height: 100%;
+  overflow: hidden;
+}
+
+p, body {
+  margin: 0; padding: 0;
+}
+
+body {
+  font-family: 'Helvetica Neue', Helvetica, sans-serif;
+  font-size: 16px;
+  background: #393b3c;
+}
+
+#unsupported,
+#loading {
+  p, a {
+    color: #b8c2c6;
+  }
+  p {
+    margin: 0 2em;
+    text-align: center;
+    line-height: 2em;
+  }
+  position: absolute;
+  top: 50%; left: 0;
+  width: 100%;
+  height: 4em;
+  margin-top: -2em;
+  font-size: 2em;
+  z-index: 2;
+}
+
+#loading {
+  font-size: 3em;
+  p { line-height: 4em; }
+  visibility: hidden;
+  .transition(all 0.6s ease-in);
+  .transform(scale(0));
+  opacity: 0;
+}
+.loaded #loading {
+  opacity: 0;
+  .transform(scale(4));
+}
+
+.loading #loading {
+  .transform(scale(1));
+  visibility: visible;
+  opacity: 1;
+}
+
+.inlinesvg.canvas #unsupported { display: none; }
+
+
+svg, canvas, .overlay {
+  position: absolute;
+  top: 0; left: 0;
+}
+
+.overlay {
+  width: 26em;
+  height: 26em;
+  left: auto;
+  right: 2%;
+  top: 50%;
+  margin-top: -13em;
+  .inner {
+    padding: 0.5em;
+    background: #fff;
+    .box-shadow(0 0 20px #626467);
+    .box-shadow(0 0 20px rgba(0, 0, 0, 0.3));
+  }
+  img {
+    width: 100%;
+    display: block;
+  }
+  a {
+    font-size: 1.2em;
+    display: block;
+    position: absolute;
+
+    overflow: hidden;
+    height: 1em;
+    width: 1em;
+    text-align: center;
+    padding: 0.2em 0.24em 0.3em;
+    line-height: 1.2;
+    border-radius: 50%;
+    background: #f7d3d1;
+    color: white;
+    text-decoration: none;
+    border: 0.2em solid #ffffff;
+    font-weight: bold;
+    top: -0.6em;
+    left: -0.6em;
+
+    &:hover {
+      background: #f22f30;
+
+    }
+  }
 }
 
 svg {
-  background-color: #dadada;
-
   .node {
-    opacity: 0.75;
-    .reach {
-      opacity: 0;
-    }
-    &.active {
-      opacity: 1;
-      stroke: #f200d3;
-      .reach {
-        opacity: 1;
-        line {
-          stroke: #f200d3;
-        }
-        circle {
-          fill: white;
-          stroke: #f200d3;
-        }
-      }
+    circle {
+      cursor: pointer;
     }
   }
-
   .reach {
     line {
-      stroke-width: 1;
-      stroke: #fb5fe2;
-      // stroke-dasharray: 1;
+      stroke-width: 2px;
     }
     circle {
-      fill: #ff00ce;
     }
   }
 
-  path.country {
-    fill: #eeeeee;
-    stroke: #30005f;
-    &.id752 {
-    }
-  }
 }

@@ -1,62 +1,197 @@
+### storiesofswedishlapland
+    instagram reach visualization ###
 
-# TODO: filtrera ut reach utanför 5km
+# filter out reach points that are closer than this
+minDistance = 30 # in km
+introDuration = 6000
+startZoom = 2900
 
+# feature detects
+require 'browsernizr/test/canvas'
+require 'browsernizr/test/svg/inline'
+browser = require 'browsernizr'
+
+ready = require './vendor/ready'
 d3 = require './vendor/d3'
 async = require './vendor/async'
 topojson = require './vendor/topojson'
 
+rad2deg = (rad) -> rad * 57.295779513
+deg2rad = (deg) -> deg * 0.017453293
+
 loadReach = (callback) -> d3.json '/data/reach.json', (error, result) -> callback error, result
 loadMap = (callback) -> d3.json '/data/world.topo.json', (error, result) -> callback error, result
-domready = (callback) -> window.addEventListener 'DOMContentLoaded', (-> callback()), false
+
+clone = (selection) ->
+  node = selection.node()
+  return d3.select(node.parentNode.insertBefore(node.cloneNode(true), node.nextSibling))
 
 async.parallel
   reach: loadReach
   map: loadMap
-  _ready: domready
+  ready: (callback) ->
+    ready ->
+      if browser.canvas and browser.inlinesvg
+        d3.select('body').attr('class', 'loading')
+        setTimeout callback, 2000
+        #callback()
+      else
+        callback new Error 'Unsupported browser'
 , (error, result) ->
   throw error if error?
-  {reach, map} = result
+  {reach, map} = preprocess result
+  d3.select('body').attr('class', 'loaded')
   main reach, map
 
 nodeColors = d3.scale.ordinal()
   .range(['#00fffd', '#ffcf00', '#ff00ce'])
 
-main = (reachData, mapData) ->
-  reachData.forEach (d) ->
+preprocess = (data) ->
+  data.reach.forEach (d) ->
     d.nodes = d.nodes.map (n) -> n.data
+    d.nodes.forEach (n) ->
+      n.reach = n.reach.filter (r) ->
+        gd = d3.geo.distance(
+          [r.location.longitude, r.location.latitude]
+          [n.location.longitude, n.location.latitude]
+        ) * 6371
+        return gd > minDistance
+    d.nodes = d.nodes.filter (n) ->
+      n.reach.length > 0
+  return data
 
-  # TODO: adapt to window
-  width = 960
-  height = 500
+main = (reachData, mapData) ->
+  globe = {type: 'Sphere'}
+  land = topojson.feature(mapData, mapData.objects.land)
+  borders = topojson.mesh(mapData, mapData.objects.countries)
+  graticule = d3.geo.graticule()()
 
-  svg = d3.select('svg')
+  width = window.innerWidth
+  height = window.innerHeight
+  centerOffset = [width/2, height/2]
+  center = [-reachData[0].location.longitude, -reachData[0].location.latitude]
+  window.addEventListener 'resize', ->
+    width = window.innerWidth
+    height = window.innerHeight
+    centerOffset = [width/2, height/2]
+    canvas.attr('width', width).attr('height', height)
+    svg.attr('width', width).attr('height', height)
+    hideDetail()
+  , false
+
+  canvas = d3.select('body').append('canvas')
     .attr('width', width)
     .attr('height', height)
 
-  projection = d3.geo.mercator()
-    .center([35, 63])
-    .scale(1500)
-    .rotate([20, 0])
+  ctx = canvas.node().getContext('2d')
+
+  svg = d3.select('body').append('svg')
+    .attr('width', width)
+    .attr('height', height)
+
+  projection = d3.geo.orthographic()
+    .translate(centerOffset)
+    .scale(1)
+    .rotate([10, -10])
+    .clipAngle(90)
 
   path = d3.geo.path()
     .projection(projection)
+    .context(ctx)
 
-  img = d3.select('body').append('img')
+  goTo = (scale, rotation, offset, duration, callback) ->
+    d3.transition()
+      .duration(duration)
+      .ease('sin-in-out')
+      .tween('zoom', ->
+        sf = d3.interpolate projection.scale(), scale
+        rf = d3.interpolate projection.rotate(), rotation
+        tf = d3.interpolate projection.translate(), offset
+        return (t) ->
+          projection.scale sf t
+          projection.rotate rf t
+          projection.translate tf t
+          renderMap()
+          updateDots()
+      )
+      .each('end', callback)
+    return
 
-  g = svg.append("g")
+  renderMap = ->
+    ctx.clearRect(0, 0, width, height)
 
-  map = topojson.feature(mapData, mapData.objects.countries).features
+    ctx.fillStyle = '#f1ffff'
+    ctx.beginPath()
+    path(globe)
+    ctx.fill()
 
-  g.selectAll('path').data(map).enter().append('path')
-    .attr('d', path)
-    .attr('class', (d) -> "country id#{ d.id }")
+    ctx.fillStyle = '#f9f7e9'
+    ctx.beginPath()
+    path(land)
+    ctx.fill()
+
+    ctx.strokeStyle = '#bbb9ad'
+    ctx.beginPath()
+    path(borders)
+    ctx.stroke()
+
+    ctx.globalAlpha = 0.2
+    ctx.beginPath()
+    path(graticule)
+    ctx.stroke()
+
+    ctx.globalAlpha = 1
+    ctx.beginPath()
+    path(globe)
+    ctx.stroke()
+
+    return
+
+  goTo startZoom, center, centerOffset, introDuration
+  setTimeout ->
+    svg.selectAll('.node').each (d, i) ->
+      d3.select(this).transition().duration(600)
+        .delay(i * 50)
+        .style('opacity', 1)
+  , introDuration * 0.7
+
+  reachGroup = svg.append('g').classed('reachGroup', true)
+  nodeGroup = svg.append('g').classed('nodeGroup', true)
+
+  overlay = d3.select('body').append('div')
+    .classed('overlay', true)
+    .style('opacity', 0)
+    .style('display', 'none')
+    .html """
+      <div class="inner">
+        <a href="#close">X</a>
+        <img>
+      </div>
+    """
+
+  overlay.select('a').on 'click', ->
+    d3.event.stopPropagation()
+    d3.event.preventDefault()
+    hideDetail()
+
+  showOverlay = (data) ->
+    overlay.datum data
+    overlay.style('display', 'block')
+    overlay.select('img').attr('src', (d) ->
+      d.images.standard_resolution.url)
+    overlay.transition()
+      .style('opacity', 1)
+
+  hideOverlay = ->
+    overlay.transition().style('opacity', 0).each 'end', ->
+      overlay.style('display', 'none')
 
   nodePosition = (d) ->
     projection [d.location.longitude, d.location.latitude]
 
   poiSize = (d) ->
     r = 1 + d.nodes.length
-    return [r * 4, r * 4]
+    return [r * 6, r * 6]
 
   poiPosition = (d) ->
     pos = nodePosition(d)
@@ -70,72 +205,138 @@ main = (reachData, mapData) ->
 
   pack = d3.layout.pack()
     .padding(2)
-    .value((d) -> d.reach.length + 1)
-    #.children((d) -> d.nodes)
+    .value((d) -> (d.reach?.length + 1) or 0)
 
-  pois = g.selectAll('.poi').data(reachData).enter().append('g')
+  pois = nodeGroup.selectAll('.poi').data(reachData).enter().append('g')
     .attr('class', 'poi')
-    .attr('transform', (d) -> posTrans(poiPosition(d)))
 
-  pois.each (d) ->
-    poi = d3.select this
+  updateDots = ->
+    pois.attr('transform', (d) -> posTrans(poiPosition(d)))
+    #svg.selectAll('.activeNode').attr('transform', (d) -> posTrans(nodePosition(d)))
 
-    ppos = poiPosition(d)
+  hideDetail = ->
+    svg.selectAll('.reach').data([]).exit().remove()
+    svg.selectAll('.activeNode').data([]).exit().remove()
+    goTo startZoom, center, centerOffset, 2000
+    svg.selectAll('.node').transition().duration(1000).delay(200).style('opacity', 1)
+    hideOverlay()
 
-    pack.size(poiSize(d))
+  showDetail = (d) ->
+    node = d3.select this
+    node.style('opacity', 0)
 
-    nodes = pack.nodes({children: d.nodes}).filter (d) ->
-      d.depth > 0
+    opos = node.node().getBoundingClientRect()
+    opos = projection.invert [opos.left + (opos.width/2), opos.top + (opos.height/2)]
+    startPos = [d.location.longitude, d.location.latitude]
 
-    ng = poi.selectAll('.node').data(nodes).enter().append('g')
-      .attr('class', 'node')
-      .on('click', (d) ->
-        img.attr('src', d.images.standard_resolution.url)
-      )
+    nodes = d3.selectAll('.node').filter (nd) -> (nd isnt d)
+    nodes.transition().duration(400)
+      .style('opacity', 0)
 
-    rg = ng.selectAll('.reach').data((d) -> d.reach).enter().append('g')
+    points =
+      type: 'MultiPoint'
+      coordinates: d.reach.map (r) ->
+        [r.location.longitude, r.location.latitude]
+
+    points.coordinates.push startPos
+    points.coordinates.push opos
+
+    c = d3.geo.centroid(points)
+    c = [-c[0], -c[1]]
+
+    scale = 40
+    bounds = d3.geo.bounds points
+    hscale = scale * width  / (bounds[1][0] - bounds[0][0])
+    vscale = scale * height / (bounds[1][1] - bounds[0][1])
+    scale = if (hscale < vscale) then hscale else vscale
+
+    activeNode = svg.selectAll('.activeNode').data([d])
+
+    activeNode.enter().append('g')
+      .classed('activeNode', true)
+      .append('circle')
+
+    activeColor = node.select('circle').style('fill')
+
+    activeNode
+      .attr('transform', posTrans(projection(opos)))
+      .select('circle')
+        .style('fill', activeColor)
+        .attr('r', d.r)
+
+    sel = reachGroup.selectAll('.reach').data d.reach, (d) -> d.username
+    sel.exit().remove()
+
+    enter = sel.enter()
+      .append('g')
       .attr('class', 'reach')
-      .style('pointer-events', 'none')
 
-    ng.append('circle')
-      .attr('cx', (d) -> d.x)
-      .attr('cy', (d) -> d.y)
-      .attr('r', (d) -> d.r)
-      .style('fill', (d, i) -> nodeColors(i))
-      .on('mouseover', ->
+    enter.append('line')
+      .attr('x1', 0)
+      .attr('y1', 0)
+      .attr('x2', 0)
+      .attr('y2', 0)
 
-        n = d3.select this.parentNode
-        n.classed('active', true)
+    enter.append('circle')
+      .attr('r', 4)
+
+    sel.select('line').style('stroke', activeColor)
+    sel.select('circle').style('fill', activeColor)
+
+    move = ->
+      showOverlay d
+      sideoff = [width * 0.4, height * 0.5]
+      goTo scale, c, sideoff, 1200
+
+      sel
+        .transition().duration(2000)
+        #.ease('sin-in-out')
+        .tween 'pos', (dr) ->
+          n = d3.select this
+          l = n.select 'line'
+          f = d3.geo.interpolate(
+            startPos,
+            [dr.location.longitude, dr.location.latitude]
+          )
+          return (t) ->
+            p = projection f(t)
+            n.attr 'transform', posTrans(p)
+            p2 = projection startPos
+            activeNode.attr 'transform', posTrans(p2)
+            l.attr 'x2', p2[0] - p[0]
+            l.attr 'y2', p2[1] - p[1]
+
+    activeNode.transition().duration(300)
+      .tween('pos', ->
+        n = d3.select this
+        f = d3.geo.interpolate opos, startPos
+        return (t) ->
+          p = projection f(t)
+          n.attr 'transform', posTrans(p)
       )
-      .on('mouseout', ->
-        n = d3.select this.parentNode
-        n.classed('active', false)
-      )
+      .each('end', move)
 
-    rg.each (d) ->
-      return unless d.location.longitude?
-      r = d3.select this
-      n = d3.select this.parentNode
+  drawDots = ->
+    pois.each (d) ->
+      poi = d3.select this
+      poi.attr('transform', (d) -> posTrans(poiPosition(d)))
 
-      dd = n.datum()
-      p = nodePosition(d)
-      p[0] -= ppos[0]
-      p[1] -= ppos[1]
+      ppos = poiPosition(d)
+      pack.size(poiSize(d))
 
-      r.append('line')
-        .attr('x1', dd.x)
-        .attr('y1', dd.y)
-        .attr('x2', p[0])
-        .attr('y2', p[1])
+      nodes = pack.nodes({children: d.nodes}).filter (d) ->
+        d.depth > 0
 
-      r.append('circle')
-        .attr('r', 2)
-        .attr('transform', posTrans(p))
+      ng = poi.selectAll('.node').data(nodes).enter().append('g')
+        .attr('class', 'node')
+        .style('opacity', 0)
+        .on('click', showDetail)
 
-  zoom = d3.behavior.zoom()
-    .on('zoom', ->
-      g.attr("transform","translate("+d3.event.translate.join(",")+")scale("+d3.event.scale+")")
-      g.selectAll("path").attr("d", path.projection(projection))
-    )
+      ng.append('circle')
+        .attr('cx', (d) -> d.x)
+        .attr('cy', (d) -> d.y)
+        .attr('r', (d) -> d.r)
+        .style('fill', (d, i) -> nodeColors(i))
 
-  svg.call(zoom)
+  renderMap()
+  drawDots()

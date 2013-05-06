@@ -4,6 +4,7 @@
   "private": true,
   "dependencies": {
     "wintersmith-less": "*",
-    "wintersmith-browserify": "*"
+    "wintersmith-browserify": "*",
+    "browsernizr": "~1.0.0"
   }
 }
