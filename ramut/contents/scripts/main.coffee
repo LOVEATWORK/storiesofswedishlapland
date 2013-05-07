@@ -5,6 +5,8 @@
 minDistance = 30 # in km
 introDuration = 6000
 startZoom = 2900
+centerPoint = [19.204102, 65.946472] # lng, lat
+dotOpacity = 0.75
 
 # feature detects
 require 'browsernizr/test/canvas'
@@ -48,7 +50,6 @@ nodeColors = d3.scale.ordinal()
 
 preprocess = (data) ->
   data.reach.forEach (d) ->
-    d.nodes = d.nodes.map (n) -> n.data
     d.nodes.forEach (n) ->
       n.reach = n.reach.filter (r) ->
         gd = d3.geo.distance(
@@ -69,14 +70,35 @@ main = (reachData, mapData) ->
   width = window.innerWidth
   height = window.innerHeight
   centerOffset = [width/2, height/2]
-  center = [-reachData[0].location.longitude, -reachData[0].location.latitude]
+  centerPoint = [-centerPoint[0], -centerPoint[1]]
   window.addEventListener 'resize', ->
     width = window.innerWidth
     height = window.innerHeight
     centerOffset = [width/2, height/2]
     canvas.attr('width', width).attr('height', height)
     svg.attr('width', width).attr('height', height)
-    hideDetail()
+    renderMap()
+    updateDots()
+  , false
+
+  currentZoom = startZoom
+  window.addEventListener 'mousewheel', (event) ->
+    return unless event.wheelDelta?
+    from = projection.scale()
+    mod = Math.log (1 + (from / 100))
+    to = from + event.wheelDelta * mod
+    to = 300 if to < 300
+    to = 15000 if to > 15000
+    currentZoom = to
+    d3.transition()
+      .duration(100)
+      .tween('zoom', ->
+        f = d3.interpolate from, to
+        return (t) ->
+          projection.scale f(t)
+          renderMap()
+          updateDots()
+      )
   , false
 
   canvas = d3.select('body').append('canvas')
@@ -98,6 +120,8 @@ main = (reachData, mapData) ->
   path = d3.geo.path()
     .projection(projection)
     .context(ctx)
+
+  inDetail = false
 
   goTo = (scale, rotation, offset, duration, callback) ->
     d3.transition()
@@ -147,12 +171,12 @@ main = (reachData, mapData) ->
 
     return
 
-  goTo startZoom, center, centerOffset, introDuration
+  goTo startZoom, centerPoint, centerOffset, introDuration
   setTimeout ->
     svg.selectAll('.node').each (d, i) ->
       d3.select(this).transition().duration(600)
-        .delay(i * 50)
-        .style('opacity', 1)
+        .delay(i * 20)
+        .style('opacity', dotOpacity)
   , introDuration * 0.7
 
   reachGroup = svg.append('g').classed('reachGroup', true)
@@ -189,9 +213,14 @@ main = (reachData, mapData) ->
   nodePosition = (d) ->
     projection [d.location.longitude, d.location.latitude]
 
+  reachExtent = d3.extent reachData, (d) -> d.totalReach
+  reachGroupSize = d3.scale.linear()
+    .domain(reachExtent)
+    .range([8, 80])
+
   poiSize = (d) ->
-    r = 1 + d.nodes.length
-    return [r * 6, r * 6]
+    r = reachGroupSize d.totalReach
+    return [r, r]
 
   poiPosition = (d) ->
     pos = nodePosition(d)
@@ -212,16 +241,30 @@ main = (reachData, mapData) ->
 
   updateDots = ->
     pois.attr('transform', (d) -> posTrans(poiPosition(d)))
-    #svg.selectAll('.activeNode').attr('transform', (d) -> posTrans(nodePosition(d)))
+    if inDetail
+      startPos = null
+      svg.selectAll('.activeNode').attr('transform', (d) ->
+        startPos = [d.location.longitude, d.location.latitude]
+        posTrans(nodePosition(d)))
+      svg.selectAll('.reach').each (d) ->
+        n = d3.select this
+        l = n.select('line')
+        p = projection [d.location.longitude, d.location.latitude]
+        p2 = projection startPos
+        l.attr 'x2', p2[0] - p[0]
+        l.attr 'y2', p2[1] - p[1]
+        n.attr 'transform', posTrans(p)
 
   hideDetail = ->
+    inDetail = false
     svg.selectAll('.reach').data([]).exit().remove()
     svg.selectAll('.activeNode').data([]).exit().remove()
-    goTo startZoom, center, centerOffset, 2000
-    svg.selectAll('.node').transition().duration(1000).delay(200).style('opacity', 1)
+    goTo currentZoom, centerPoint, centerOffset, 2000
+    svg.selectAll('.node').transition().duration(1000).delay(200).style('opacity', dotOpacity)
     hideOverlay()
 
   showDetail = (d) ->
+    inDetail = false
     node = d3.select this
     node.style('opacity', 0)
 
@@ -291,7 +334,7 @@ main = (reachData, mapData) ->
       sel
         .transition().duration(2000)
         #.ease('sin-in-out')
-        .tween 'pos', (dr) ->
+        .tween('pos', (dr) ->
           n = d3.select this
           l = n.select 'line'
           f = d3.geo.interpolate(
@@ -305,6 +348,8 @@ main = (reachData, mapData) ->
             activeNode.attr 'transform', posTrans(p2)
             l.attr 'x2', p2[0] - p[0]
             l.attr 'y2', p2[1] - p[1]
+        )
+        .each('end', -> inDetail = true)
 
     activeNode.transition().duration(300)
       .tween('pos', ->
