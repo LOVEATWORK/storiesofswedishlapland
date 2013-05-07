@@ -16,17 +16,24 @@ catch error
   else
     throw error
 
-MAX_REQS = 8 # max concurrent requests
+MAX_REQS = 10 # max concurrent requests
 
 authUrl = Instagram.getAuthUrl config.instagram.id, config.instagram.redirect
-instagram = new Instagram
+instagram = new Instagram process.env.TOKEN, MAX_REQS
 
 log = (msg, newline=true) ->
   msg += '\n' if newline
   process.stderr.write msg
 
-eliminateDuplicates = (array) ->
-  array.filter (elem, pos) -> array.indexOf(elem) is pos
+eliminateDuplicates = (array, identify) ->
+  map = {}
+  identify ?= (item) -> ''+item
+  for item in array
+    map[identify(item)] = item
+  rv = []
+  for id, item of map
+    rv.push item
+  return rv
 
 mapRange = (value, inputRange, outputRange=[0, 1]) ->
   ((value - inputRange[0]) / (inputRange[1] - inputRange[0]) * (outputRange[1] - outputRange[0]) + outputRange[0])
@@ -47,7 +54,7 @@ resolveReach = (media, callback) ->
 
   async.waterfall [
     (callback) ->
-      async.mapSeries eliminateDuplicates(userIds), User.load.bind(User), callback
+      async.map eliminateDuplicates(userIds), User.load.bind(User), callback
     (users, callback) ->
       users = users.filter (user) -> user.isValid()
       reach = users.map (user) -> user.repr()
@@ -63,6 +70,7 @@ DataModel.deserialize = (id, data, callback) ->
 
 class Node extends DataModel
   ### A node is a instagram post and its reach ###
+  toAPI: -> @data
 
 Node.new = (id, callback) ->
   ### Fetch instagram post *id* and resolve likes to users/positions ###
@@ -86,8 +94,8 @@ Node.nodesForLocation = (location, callback) ->
   instagram.mediaSearch location.lat, location.lng, (error, result) ->
     return callback error if error?
     log "found #{ result.length } photos at #{ location.lat },#{ location.lng }"
-    async.mapLimit result, MAX_REQS, (media, callback) ->
-      Node.load media.id, callback
+    async.map result, (media, callback) ->
+      Node.load media.id, true, callback
     , callback
 
 class User extends DataModel
@@ -95,8 +103,7 @@ class User extends DataModel
   isValid: ->
     not @isPrivate() and @location()?
 
-  isPrivate: ->
-    @data is false
+  isPrivate: -> @data.private
 
   location: ->
     for media in @data.recent
@@ -108,81 +115,67 @@ class User extends DataModel
 
 User.new = (id, callback) ->
   log "fetching user #{ id }"
-
   final = callback
   async.waterfall [
     (callback) ->
       instagram.userInfo id, (error, userdata) ->
         if error?.body?.meta?.error_type is 'APINotAllowedError'
           log "user #{ id } is private"
-          final null, new User id, false
+          final null, new User(id, {private: true})
         else
           callback error, userdata
     (userdata, callback) ->
       instagram.userRecent id, (error, recent) ->
         return callback error if error?
         userdata.recent = recent
-        callback null, new User id, userdata
+        userdata.private = false
+        callback null, new User(id, userdata)
       , callback
   ], callback
 
-tokengrab = """
-  if window.location.hash[0..12] is '#access_token'
-    token = window.location.hash.split('=')[1]
-    window.location.href = '?access_token=' + token
-  else if window.location.search[0..12] is '?access_token'
-    document.write 'done, you can close this window'
-  else
-    window.location.href = '#{ authUrl }'
-"""
+class Poi extends Model
 
-app = express()
-app.get '/', (request, response) ->
-  if request.query.access_token?
-    instagram.accessToken = request.query.access_token
-    log "token: #{ request.query.access_token }"
-    buildGraph()
+  constructor: (@id, @location, @nodes) ->
 
-  response.writeHead 200, {'Content-Type': 'text/html; charset=utf-8'}
-  response.end "<script>#{ coffee.compile tokengrab }</script>"
+  totalReach: ->
+    @nodes.reduce ((p, n) -> p + n.data.reach.length), 0
 
-app.listen config.port
-log "waiting for access token, visit #{ config.instagram.redirect }"
-
-class Poi extends DataModel
-
-  cleanNodes: ->
-    ### Remove any duplicate nodes ###
-    key = (node) -> node.id
-    map = {}
-    for node in @data.nodes
-      map[key(node)] = node
-    @data.nodes = []
-    for _, node of map
-      @data.nodes.push node
-    return
+  addNodes: (nodes) ->
+    nodes = @nodes.concat nodes
+    @nodes = eliminateDuplicates nodes, (node) -> node.id
 
   serialize: ->
-    @cleanNodes()
-    return super()
+    rv = {@location}
+    rv.nodes = @nodes.map (node) -> node.id
+    return rv
+
+  toAPI: ->
+    rv = {@location}
+    rv.name = @id
+    rv.totalReach = @totalReach()
+    rv.nodes = @nodes.map (node) -> node.toAPI()
+    return rv
 
 Poi.new = (id, callback) ->
-  callback null, new Poi(id, {nodes: []})
+  callback null, new Poi(id, null, [])
+
+Poi.deserialize = (id, data, callback) ->
+  async.map data.nodes, Node.load.bind(Node), (error, result) ->
+    return callback error if error?
+    callback null, new Poi(id, data.location, result)
 
 updatePoi = (point, callback) ->
   log "Updating #{ point.name }... "
   async.waterfall [
     (callback) -> Poi.load point.name, callback
     (poi, callback) ->
-      poi.data.name = point.name
-      poi.data.location =
+      poi.location =
         latitude: point.lat
         longitude: point.lng
       Node.nodesForLocation point, (error, nodes) ->
         if not error?
-          totalReach = nodes.reduce ((p, n) -> p + n.data.reach.length), 0
-          log "#{ point.name }: #{ nodes.length } nodes - total reach #{ totalReach }"
-          poi.data.nodes = poi.data.nodes.concat nodes
+          poi.addNodes nodes
+          log "#{ point.name }: #{ poi.nodes.length } nodes - total reach #{ poi.totalReach() }"
           poi.save callback
         else
           callback error
@@ -190,11 +183,37 @@ updatePoi = (point, callback) ->
 
 buildGraph = ->
   async.waterfall [
-    (callback) -> async.forEachSeries config.poi, updatePoi, callback
+    (callback) -> async.forEachLimit config.poi, 2, updatePoi, callback
     (callback) -> Poi.all callback
   ], (error, results) ->
     if error?
       log "ERROR: #{ error.message }\n" + util.inspect(error)
       throw error
-    process.stdout.write JSON.stringify results.map((poi) -> poi.data)
+    process.stdout.write JSON.stringify results.map (poi) -> poi.toAPI()
     process.exit()
+
+if instagram.accessToken?
+  buildGraph()
+else
+  tokengrab = """
+    if window.location.hash[0..12] is '#access_token'
+      token = window.location.hash.split('=')[1]
+      window.location.href = '?access_token=' + token
+    else if window.location.search[0..12] is '?access_token'
+      document.write 'done, you can close this window'
+    else
+      window.location.href = '#{ authUrl }'
+  """
+
+  app = express()
+  app.get '/', (request, response) ->
+    if request.query.access_token?
+      instagram.accessToken = request.query.access_token
+      log "token: #{ request.query.access_token }"
+      buildGraph()
+
+    response.writeHead 200, {'Content-Type': 'text/html; charset=utf-8'}
+    response.end "<script>#{ coffee.compile tokengrab }</script>"
+
+  app.listen config.port
+  log "waiting for access token, visit #{ config.instagram.redirect }"

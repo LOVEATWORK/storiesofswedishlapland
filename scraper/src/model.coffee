@@ -38,14 +38,20 @@ Model.load = (id, ignoreCache, callback) ->
     callback = arguments[1] or throwop
     ignoreCache = false
 
-  safeGet @db(), id, (error, result) =>
-    return callback error if error?
-    if not result? or ignoreCache
-      this.new id, (error, result) ->
-        return callback error, result if error? or not result?
-        result.save (error) -> callback error, result
-    else
-      this.deserialize id, result, callback
+  createNew = =>
+    this.new id, (error, result) ->
+      return callback error, result if error? or not result?
+      result.save (error) -> callback error, result
+
+  if ignoreCache
+    createNew()
+  else
+    safeGet @db(), id, (error, result) =>
+      return callback error if error?
+      if not result?
+        createNew()
+      else
+        this.deserialize id, result, callback
 
 Model.deserialize = (id, data, callback) ->
   throw new Error 'Not implemented'
