@@ -5,6 +5,11 @@ querystring = require 'querystring'
 zlib = require 'zlib'
 
 requestTimeout = 30 # in seconds
+retryDelay = 250 # milliseconds
+
+# this error happens frequently, probably when their servers are overloaded
+isMediaSearchError = (error) ->
+  (error.body?.meta?.error_message is 'Media search error. Please try again shortly')
 
 fetchUrl = (url, callback) ->
   opts = parseUrl url
@@ -69,8 +74,9 @@ fetchInstagram = (url, callback) ->
 class Instagram
   baseUrl = 'https://api.instagram.com/v1/'
 
-  constructor: (@accessToken) ->
-    @maxTries = 3 # how many times to retry a request before failing
+  constructor: (@accessToken, concurrency=5) ->
+    @maxTries = 10 # how many times to retry a request before failing
+    @queue = async.queue @worker, concurrency
 
   mediaInfo: (mediaId, callback) ->
     ### Get information about a media object. ###
@@ -106,14 +112,20 @@ class Instagram
       return callback new Error 'Missing access token'
     opts.access_token = @accessToken
     url = baseUrl + endpoint + '?' + querystring.stringify(opts)
+    @queue.push {url, endpoint}, callback
+
+  worker: (task, callback) =>
     tries = 0
     result = null
     async.until (-> result?), (callback) =>
       tries++
-      fetchInstagram url, (error, res) =>
+      fetchInstagram task.url, (error, res) =>
         result = res
-        if error? and (tries > @maxTries or error.code is 400)
-          callback error
+        if error?
+          if tries > @maxTries or (error.code is 400 and !isMediaSearchError(error))
+            callback error
+          else
+            setTimeout callback, retryDelay
         else
           callback()
     , (error) ->
